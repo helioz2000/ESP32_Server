@@ -14,5 +14,6 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=/Users/eb/Code/VSC/ESP32_Server/build"
-  ]
+  ],
+  "idf.flashType": "UART"
 }

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <lwip/netdb.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_netif.h"
@@ -15,8 +16,11 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "sdkconfig.h"
+#include "tcpserver.h"
 
-static const char *TAG = "eth_basic_example";
+//extern void tcp_server_task(void *pvParameters);
+
+const char *TAG = "ESP32_Server";
 
 /**
  * @brief Initialize Ethernet driver with generic PHY (all IEEE 802.3 compliant PHYs)
@@ -167,6 +171,7 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Ethernet Stopped");
         break;
     default:
+        ESP_LOGE(TAG, "eth_event_handler: Unknown Event %d", event_id);
         break;
     }
 }
@@ -183,6 +188,18 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "ETHIP:" IPSTR, IP2STR(&ip_info->ip));
     ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
     ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
+    ESP_LOGI(TAG, "~~~~~~~~~~~");
+
+    //IPV4:
+    xTaskCreate(tcp_server_task, "tcp_server", 4096, (void*)AF_INET, 5, NULL);
+    //IPV6:
+    //xTaskCreate(tcp_server_task, "tcp_server", 4096, (void*)AF_INET6, 5, NULL);
+
+}
+
+static void lost_ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    ESP_LOGI(TAG, "Ethernet Lost IP Address");
     ESP_LOGI(TAG, "~~~~~~~~~~~");
 }
 
@@ -209,6 +226,7 @@ void app_main(void)
     // Register user defined event handlers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP, &lost_ip_event_handler, NULL));
 
     // Start Ethernet driver state machine
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
