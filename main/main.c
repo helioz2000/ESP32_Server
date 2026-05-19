@@ -26,9 +26,6 @@ const char *TAG = "ESP32_Server";
 
 QueueHandle_t app_event_queue = NULL;
 
-
-
-
 /**
  * @brief Initialize Ethernet driver with generic PHY (all IEEE 802.3 compliant PHYs)
  *
