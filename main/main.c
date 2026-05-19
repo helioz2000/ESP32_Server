@@ -15,12 +15,19 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "usb/usb_host.h"
+#include "usb/hid_host.h"
 #include "sdkconfig.h"
-#include "tcpserver.h"
 
-//extern void tcp_server_task(void *pvParameters);
+#include "tcpserver.h"
+#include "usbhost.h"
 
 const char *TAG = "ESP32_Server";
+
+QueueHandle_t app_event_queue = NULL;
+
+
+
 
 /**
  * @brief Initialize Ethernet driver with generic PHY (all IEEE 802.3 compliant PHYs)
@@ -205,6 +212,8 @@ static void lost_ip_event_handler(void *arg, esp_event_base_t event_base, int32_
 
 void app_main(void)
 {
+    
+    app_event_queue_t evt_queue;
     // Initialize Ethernet driver
     esp_eth_handle_t eth_handle;
     ESP_ERROR_CHECK(eth_init(&eth_handle));
@@ -230,6 +239,39 @@ void app_main(void)
 
     // Start Ethernet driver state machine
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
+
+    usb_hid_init();
+
+    ESP_LOGI(TAG, "Waiting for HID Device to be connected");
+
+    while (1) {
+        // Wait queue
+        if (xQueueReceive(app_event_queue, &evt_queue, portMAX_DELAY)) {
+            if (APP_EVENT == evt_queue.event_group) {
+                // User pressed button
+                usb_host_lib_info_t lib_info;
+                ESP_ERROR_CHECK(usb_host_lib_info(&lib_info));
+                if (lib_info.num_devices == 0) {
+                    // End while cycle
+                    break;
+                } else {
+                    ESP_LOGW(TAG, "To shutdown example, remove all USB devices and press button again.");
+                    // Keep polling
+                }
+            }
+
+            if (APP_EVENT_HID_HOST ==  evt_queue.event_group) {
+                hid_host_device_event(evt_queue.hid_host_device.handle,
+                                      evt_queue.hid_host_device.event,
+                                      evt_queue.hid_host_device.arg);
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "HID Driver uninstall");
+    ESP_ERROR_CHECK(hid_host_uninstall());
+    xQueueReset(app_event_queue);
+    vQueueDelete(app_event_queue);
 
 #if CONFIG_EXAMPLE_ETH_DEINIT_AFTER_S >= 0
     // For demonstration purposes, wait and then deinit Ethernet network
