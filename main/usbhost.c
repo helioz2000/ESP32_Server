@@ -2,8 +2,13 @@
 #include "esp_log.h"
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
+#include "sdkconfig.h"
 
 #include "usbhost.h"
+
+// Define the USB device details - all other devices will be rejected
+#define TARGET_VENDOR_ID   0x0483       //STMicroelectronics
+#define TARGET_PRODUCT_ID  0xA1DE       //RigExpert ShackMaster 600 
 
 static const char *TAG = "usbhost";
 
@@ -65,9 +70,7 @@ static void hid_host_generic_report_callback(const uint8_t *const data, const in
  * @param[in] event              HID Host interface event
  * @param[in] arg                Pointer to arguments, does not used
  */
-void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
-                                 const hid_host_interface_event_t event,
-                                 void *arg)
+void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle, const hid_host_interface_event_t event, void *arg)
 {
     uint8_t data[64] = { 0 };
     size_t data_length = 0;
@@ -116,12 +119,23 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle,
  * @param[in] event              HID Host Device event
  * @param[in] arg                Pointer to arguments, does not used
  */
-void hid_host_device_event(hid_host_device_handle_t hid_device_handle,
-                           const hid_host_driver_event_t event,
-                           void *arg)
+void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid_host_driver_event_t event, void *arg)
 {
     hid_host_dev_params_t dev_params;
-    ESP_ERROR_CHECK(hid_host_device_get_params(hid_device_handle, &dev_params));
+//    hid_class_descritpor_type_t *dev_desc;
+    //usb_device_handle_t raw_usb_handle;
+
+/*
+    // Get the USB device handle
+    ESP_ERROR_CHECK(hid_host_device_get_device_handle(hid_device_handle, &raw_usb_handle));
+    // Get device descriptor and extract vendor and product ID
+    ESP_ERROR_CHECK(usb_host_get_device_descriptor(raw_usb_handle, &device_desc));
+    uint16_t current_vid = device_desc->idVendor;
+    uint16_t current_pid = device_desc->idProduct;
+
+
+*/
+    ESP_ERROR_CHECK(hid_host_device_get_params(hid_device_handle, &dev_params));    
 
     switch (event) {
     case HID_HOST_DRIVER_EVENT_CONNECTED:
@@ -212,6 +226,34 @@ void usb_hid_init(void) {
     app_event_queue = xQueueCreate(10, sizeof(app_event_queue_t));
 }
 
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+/**
+ * @brief Callback for USB device enumeration filtering
+ *
+ * @param[in] device_desc  USB device description struct
+ * @return bool value, true to indicate it the device enumeration is accepted, false to reject device
+ * 
+ * @note USB_HOST_ENABLE_ENUM_FILTER_CALLBACK must be enabled (menuconfig) for this function to work
+ */
+bool usb_host_enum_filter_cb(const usb_device_desc_t *device_desc, unsigned char *bConfigurationValue) {
+
+    ESP_LOGI(TAG, "VID: 0x%04X, PID: 0x%04X. Opening interface...\n", device_desc->idVendor, device_desc->idProduct);
+
+    // Testing only - to be deleted
+    return true;
+
+    if (device_desc->idVendor != TARGET_VENDOR_ID) {
+        ESP_LOGE(TAG," vendor ID mismatch, expecting 0x%04X", TARGET_VENDOR_ID);
+        return false;
+    }
+    if (device_desc->idProduct != TARGET_PRODUCT_ID) {
+        ESP_LOGE(TAG," vendor ID mismatch, expecting 0x%04X", TARGET_PRODUCT_ID);
+        return false;
+    }
+    return true; // Accept device
+}
+#endif
+
 /**
  * @brief Start USB Host install and handle common USB host library events
  *
@@ -221,7 +263,16 @@ void usb_host_task(void *arg) {
     const usb_host_config_t host_config = {
         .skip_phy_setup = false,
         .intr_flags = ESP_INTR_FLAG_LOWMED,
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+        .enum_filter_cb = usb_host_enum_filter_cb,
+#endif
     };
+
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+    ESP_LOGI(TAG,"USB host enumeration filter: VendorID 0x%04X ProductID 0x%04X", TARGET_VENDOR_ID, TARGET_PRODUCT_ID);
+#else
+    ESP_LOGI(TAG,"USB host enumeration filter OFF");
+#endif
 
     ESP_ERROR_CHECK(usb_host_install(&host_config));
     xTaskNotifyGive(arg);

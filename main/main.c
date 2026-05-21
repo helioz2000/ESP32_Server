@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include "esp_netif.h"
 #include "esp_eth.h"
+#include "esp_http_server.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_check.h"
@@ -20,6 +21,7 @@
 #include "sdkconfig.h"
 
 #include "tcpserver.h"
+#include "httpserver.h"
 #include "usbhost.h"
 
 const char *TAG = "ESP32_Server";
@@ -194,11 +196,14 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
     ESP_LOGI(TAG, "~~~~~~~~~~~");
 
+    // TCP server task
     //IPV4:
     xTaskCreate(tcp_server_task, "tcp_server", 4096, (void*)AF_INET, 5, NULL);
     //IPV6:
     //xTaskCreate(tcp_server_task, "tcp_server", 4096, (void*)AF_INET6, 5, NULL);
 
+    // Web server
+    start_webserver();
 }
 
 static void lost_ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
