@@ -15,19 +15,138 @@
 
 static const char *TAG = "httpserver";
 
+// Example variable in your C code
+int my_counter_variable = 42;
+
+// Raw HTML Webpage
+/*const char* html_page = 
+"<!DOCTYPE html><html>"
+"<head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+"<style>html { font-family: sans-serif; display: inline-block; margin: 0px auto; text-align: center;}"
+".btn { border: none; color: white; padding: 16px 40px;"
+"text-decoration: none; font-size: 30px; margin: 10px; cursor: pointer; border-radius: 5px;}"
+".btn-on { background-color: #4CAF50; }"
+".btn-off { background-color: #f44336; }"
+"</style>"
+"<script>"
+"function toggleGPIO(action) {"
+"  fetch('/api/' + action)"
+"    .then(response => console.log('Action sent: ' + action))"
+"    .catch(err => console.error('Error:', err));"
+"}"
+"</script>"
+"<title>ESP32-P4 Control</title></head>"
+"<body><h1>ESP32-P4 GPIO Control</h1>"
+"<p><button class='btn btn-on' onclick='toggleGPIO(\"on\")'>ON</button></p>"
+"<p><button class='btn btn-off' onclick='toggleGPIO(\"off\")'>OFF</button></p>"
+"</body></html>";
+*/
+/*
+const char* html_page = 
+"<!DOCTYPE html><html>"
+"<head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+"<style>html { font-family: sans-serif; display: inline-block; margin: 0px auto; text-align: center;}"
+".btn { border: none; color: white; padding: 16px 40px; text-decoration: none; font-size: 30px; margin: 10px; cursor: pointer; border-radius: 5px;}"
+".btn-on { background-color: #4CAF50; }"
+".btn-off { background-color: #f44336; }"
+".data-box { font-size: 24px; color: #333; margin-top: 20px; font-weight: bold; }"
+"</style>"
+"<script>"
+"function toggleGPIO(action) {"
+"  fetch('/api/' + action)"
+"    .then(response => console.log('Action sent: ' + action))"
+"    .catch(err => console.error('Error:', err));"
+"}"
+""
+"function updateVariable() {"
+"  fetch('/api/status')"
+"    .then(response => response.text())"
+"    .then(data => {"
+"      document.getElementById('live-variable').innerText = data;"
+"    })"
+"    .catch(err => console.error('Error fetching data:', err));"
+"}"
+""
+"// Fetch the variable automatically when the page loads"
+"window.onload = function() {"
+"  updateVariable();"
+"  setInterval(updateVariable, 2000); // Refresh data every 2000ms (2 seconds)"
+"}"
+"</script>"
+"<title>ESP32-P4 Control</title></head>"
+"<body>"
+"  <h1>ESP32-P4 GPIO Control</h1>"
+"  <p><button class='btn btn-on' onclick='toggleGPIO(\"on\")'>ON</button></p>"
+"  <p><button class='btn btn-off' onclick='toggleGPIO(\"off\")'>OFF</button></p>"
+"  "
+"  <!-- The variable value will display here -->"
+"  <div class='data-box'>Current Variable Value: <span id='live-variable'>...</span></div>"
+"</body>"
+"</html>";
+*/
+
+const char* html_page = 
+"<!DOCTYPE html><html>"
+"<head><meta name='viewport' content='width=device-width, initial-scale=1'>"
+"<style>html { font-family: sans-serif; display: inline-block; margin: 0px auto; text-align: center;}"
+".btn { border: none; color: white; padding: 16px 40px; text-decoration: none; font-size: 30px; margin: 10px; cursor: pointer; border-radius: 5px;}"
+".btn-on { background-color: #4CAF50; }"
+".btn-off { background-color: #f44336; }"
+".data-box { font-size: 24px; color: #333; margin-top: 20px; font-weight: bold; }"
+"</style>"
+"<script>"
+"function toggleGPIO(action) {"
+"  fetch('/api/' + action)"
+"    .then(response => console.log('Action sent: ' + action))"
+"    .catch(err => console.error('Error:', err));"
+"}"
+""
+"function updateVariable() {"
+"  fetch('/api/status')"
+"    .then(response => response.text())"
+"    .then(data => {"
+"      document.getElementById('live-variable').innerText = data;"
+"    })"
+"    .catch(err => console.error('Error fetching data:', err));"
+"}"
+""
+"// Fetch the variable automatically when the page loads"
+"window.onload = function() {"
+"  updateVariable();"
+"  setInterval(updateVariable, 2000);"
+"}"
+"</script>"
+"<title>ESP32-P4 Control</title></head>"
+"<body>"
+"  <h1>ESP32-P4 GPIO Control</h1>"
+"  <p><button class='btn btn-on' onclick=\"toggleGPIO('on')\">ON</button></p>"
+"  <p><button class='btn btn-off' onclick=\"toggleGPIO('off')\">OFF</button></p>"
+"  "
+"  <!-- The variable value will display here -->"
+"  <div class='data-box'>Current Variable Value: <span id='live-variable'>...</span></div>"
+"</body>"
+"</html>";
+
+
+
 #define HTTP_PORT 80
 
-// 1. Define the HTTP GET Handler function
-static esp_err_t hello_get_handler(httpd_req_t *req)
+// HTTP GET Handler function
+static esp_err_t root_get_handler(httpd_req_t *req)
 {
     const char *response_html = "<html><body><h1>Hello from ESP32-P4 under ESP-IDF v6!</h1></body></html>";
     
     // Set HTTP status code and content type metadata
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_status(req, "200 OK");
+
+    // disable page caching
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
     
     // Stream the raw response buffer back down the TCP connection socket
-    httpd_resp_send(req, response_html, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, html_page, HTTPD_RESP_USE_STRLEN);
     
     ESP_LOGI(TAG, "Webpage request handled successfully");
     return ESP_OK;
@@ -36,15 +155,84 @@ static esp_err_t hello_get_handler(httpd_req_t *req)
     return ESP_FAIL;
 }
 
-// 2. Associate the handler to a URI path string
-static const httpd_uri_t hello_uri_route = {
-    .uri       = "/",
+// Handler to silence favicon.ico requests with an empty 204 response
+static esp_err_t favicon_get_handler(httpd_req_t *req) {
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_send(req, NULL, 0); // Send no body data
+    return ESP_OK;
+}
+
+// Handler for ON button (GET /on)
+static esp_err_t on_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "ON button activated");
+    // Redirect or re-serve the root page to keep the buttons visible
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, "OFF_OK", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+// Handler for OFF button (GET /off)
+static esp_err_t off_get_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "Off button activated");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, "ON_OK", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+static const httpd_uri_t favicon_uri = {
+    .uri       = "/favicon.ico",
     .method    = HTTP_GET,
-    .handler   = hello_get_handler,
+    .handler   = favicon_get_handler,
     .user_ctx  = NULL
 };
 
-// 3. Server Startup Sequence
+static const httpd_uri_t root_uri = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = root_get_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t on_uri = {
+    .uri       = "/api/on",
+    .method    = HTTP_GET,
+    .handler   = on_get_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t off_uri = {
+    .uri       = "/api/off",
+    .method    = HTTP_GET,
+    .handler   = off_get_handler,
+    .user_ctx  = NULL
+};
+
+/* Handler to send the variable value (GET /api/status) */
+static esp_err_t status_get_handler(httpd_req_t *req) {
+    char response_buffer[32];
+    
+    // Convert the variable into a plain text string
+    snprintf(response_buffer, sizeof(response_buffer), "%d", my_counter_variable);
+    
+    ESP_LOGI(TAG,"Status: <%s>", response_buffer);
+
+    // Simulate updating the variable every time it's read (optional)
+    my_counter_variable++; 
+
+    httpd_resp_set_type(req, "text/plain");
+    httpd_resp_send(req, response_buffer, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+// Define the structure
+static const httpd_uri_t status_uri = {
+    .uri       = "/api/status",
+    .method    = HTTP_GET,
+    .handler   = status_get_handler,
+    .user_ctx  = NULL
+};
+
+// Server Startup
 httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
@@ -57,7 +245,11 @@ httpd_handle_t start_webserver(void)
     ESP_LOGI(TAG, "Starting web server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK) {
         // Register the active route endpoints
-        httpd_register_uri_handler(server, &hello_uri_route);
+        httpd_register_uri_handler(server, &root_uri);
+        httpd_register_uri_handler(server, &on_uri);
+        httpd_register_uri_handler(server, &off_uri);
+        httpd_register_uri_handler(server, &favicon_uri);
+        httpd_register_uri_handler(server, &status_uri);
         return server;
     }
 

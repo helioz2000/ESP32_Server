@@ -4,7 +4,7 @@
   "idf.openOcdConfigs": [
     "board/esp32p4-builtin.cfg"
   ],
-  "idf.port": "/dev/tty.wchusbserial5B7B0314991",
+  "idf.port": "/dev/tty.usbmodem5B7B0315781",
   "idf.currentSetup": "/Users/eb/.espressif/v6.0.1/esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32p4"
