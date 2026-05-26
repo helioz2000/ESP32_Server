@@ -24,115 +24,9 @@ int my_counter_variable = 42;
 static int received_user_number = 0;
 static char received_user_string[64] = {0};
 
-const char* html_page = 
-"<!DOCTYPE html><html>"
-"<head><meta name='viewport' content='width=device-width, initial-scale=1'>"
-"<style>html { font-family: sans-serif; display: inline-block; margin: 0px auto; text-align: center;}"
-".btn { border: none; color: white; padding: 16px 40px; text-decoration: none; font-size: 30px; margin: 10px; cursor: pointer; border-radius: 5px;}"
-".btn-on { background-color: #4CAF50; }"
-".btn-off { background-color: #f44336; }"
-".btn-send { background-color: #008CBA; font-size: 20px; padding: 10px 20px; }"
-".input-field:invalid { border-color: #f44336; background-color: #ffebee; }\n"
-".input-field { font-size: 20px; padding: 10px; width: 150px; text-align: center; border-radius: 5px; border: 1px solid #ccc; }"
-".data-box { font-size: 24px; color: #333; margin-top: 20px; font-weight: bold; }"
-"</style>"
-"<script>"
-"function toggleGPIO(action) {"
-"  fetch('/api/' + action)"
-"    .then(response => console.log('Action sent: ' + action))"
-"    .catch(err => console.error('Error:', err));"
-"}"
-""
-"function updateVariable() {"
-"  fetch('/api/status')"
-"    .then(response => response.text())"
-"    .then(data => {"
-"      document.getElementById('live-variable').innerText = data;"
-"    })"
-"    .catch(err => console.error('Error fetching data:', err));"
-"}"
-""
-"function sendData() {"
-"  var numVal = document.getElementById('num-input').value;"
-"  var strVal = document.getElementById('str-input').value;"
-"  if(numVal === '' || strVal === '') { alert('Please fill in both fields'); return; }"
-"  "
-"  var numInt = parseInt(numVal, 10);"
-"  if(numInt < 0 || numInt > 255) { alert('Number must be between 0 and 255'); return; }"
-"  "
-"  var url = '/api/set?value=' + encodeURIComponent(numVal) + '&msg=' + encodeURIComponent(strVal);"
-"  "
-"  fetch(url)"
-"    .then(response => response.text())"
-"    .then(data => console.log('Server response: ' + data))"
-"    .catch(err => console.error('Error sending data:', err));"
-"}"
-""
-"function sendIPData() {"
-"  var ipInput = document.getElementById('ip-input');"
-""
-"  if (!ipInput.checkValidity()) {"
-"    alert('Please enter a valid IPv4 address (0-255 per octet).');"
-"    return;"
-"  }"
-""
-"  var ipVal = ipInput.value;"
-"  var url = '/api/set_ip?ip=' + encodeURIComponent(ipVal);"
-""  
-"  fetch(url)"
-"    .then(response => response.text())"
-"    .then(data => console.log('Server response: ' + data))"
-"    .catch(err => console.error('Error sending IP:', err));"
-"}"
-""
-"function getSystemIP() {"
-"  fetch('/api/get_ip')"
-"    .then(response => response.text())"
-"    .then(ipAddress => {"
-"      document.getElementById('ip-input').placeholder = ipAddress;"
-"    })"
-"    .catch(err => console.error('Error fetching system IP:', err));"
-"}"
-""
-"window.onload = function() {"
-"  updateVariable();"
-"  getSystemIP()"
-"  setInterval(updateVariable, 5000);"
-"}"
-"</script>"
-"<title>ESP32-P4 Control</title></head>"
-"<body>"
-"  <h1>ESP32-P4 GPIO Control</h1>"
-"  <p><button class='btn btn-on' onclick=\"toggleGPIO('on')\">ON</button></p>"
-"  <p><button class='btn btn-off' onclick=\"toggleGPIO('off')\">OFF</button></p>"
-"  "
-"  <!-- Dual Input Block -->"
-"  <h2>System Parameters</h2>"
-"  <p>"
-"    <input type='number' id='num-input' class='input-field' placeholder='Enter number'>"
-"    <input type='text' id='str-input' class='input-field' placeholder='Enter text string'>"
-"    <br><br>"
-"    <button class='btn btn-send' onclick='sendData()'>Send Data</button>"
-"  </p>"
-"  "
-"<hr>"
-"  "
-"  <!-- IP Input Block with Dedicated Button -->"
-"  <h2>Network Configuration</h2>"
-"  <p>"
-"    <input type='text' id='ip-input' class='input-field' required "
-"           placeholder='Loading IP ....' "
-"           pattern='^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'>"
-"    <br><br>"
-"    <button class='btn btn-send' onclick='sendIPData()'>Send IP Address</button>"
-"  </p>"
-"  "
-"  <hr>"
-"  "
-"  <!-- The variable value will display here -->"
-"  <div class='data-box'>Current Variable Value: <span id='live-variable'>...</span></div>"
-"</body>"
-"</html>";
+// reference to index.html which is embedded as a binary
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
 
 // URL Decode Helper function
 // parse hex pairs back into standard characters (e.g. %20 -> space)
@@ -175,7 +69,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Expires", "0");
     
     // Stream the raw response buffer back down the TCP connection socket
-    httpd_resp_send(req, html_page, HTTPD_RESP_USE_STRLEN);
+    //httpd_resp_send(req, html_page, HTTPD_RESP_USE_STRLEN);
+    const size_t index_html_size = (index_html_end - index_html_start);
+    return httpd_resp_send(req, (const char *)index_html_start, index_html_size);
     
     ESP_LOGI(TAG, "Webpage request handled successfully");
     return ESP_OK;
@@ -334,6 +230,7 @@ static esp_err_t api_get_ip_handler(httpd_req_t *req) {
         if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
             // Convert native binary IP address into standard string format
             esp_ip4addr_ntoa(&ip_info.ip, ip_str, sizeof(ip_str));
+            ESP_LOGI(TAG, "System IP: %s", ip_str);
         }
     }
 
