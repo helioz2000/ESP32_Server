@@ -267,6 +267,12 @@ void app_main(void)
                                       evt_queue.hid_host_device.event,
                                       evt_queue.hid_host_device.arg);
             }
+
+            if (APP_EVENT_HID_INTERFACE == evt_queue.event_group) {
+                hid_host_interface_event(evt_queue.hid_host_device.handle,
+                                      evt_queue.hid_host_device.event,
+                                      evt_queue.hid_host_device.arg);
+            }
         }
     }
 

@@ -14,6 +14,7 @@
 #include "esp_eth.h" 
 
 #include "httpserver.h"
+#include "usbhost.h"
 
 static const char *TAG = "httpserver";
 
@@ -90,17 +91,20 @@ static esp_err_t favicon_get_handler(httpd_req_t *req) {
 // Handler for ON button (GET /on)
 static esp_err_t on_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "ON button activated");
+    sm_set_power(true);
     // Redirect or re-serve the root page to keep the buttons visible
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_send(req, "OFF_OK", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, "ON_OK", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
 // Handler for OFF button (GET /off)
 static esp_err_t off_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Off button activated");
+    sm_set_power(false);
+    //sm_get_values();
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_send(req, "ON_OK", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, "OFF_OK", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 

@@ -12,38 +12,71 @@
 
 static const char *TAG = "usbhost";
 
+bool usb_device_is_connected = false;
+hid_host_device_handle_t usb_host_device_handle;
+
+// USB device details
+char usb_dev_manufacturer[HID_STR_DESC_MAX_LENGTH] = {0};
+char usb_dev_product[HID_STR_DESC_MAX_LENGTH] = {0};
+char usb_dev_serial[HID_STR_DESC_MAX_LENGTH] = {0};
+
+#define HID_REPORT_ID 7      // Fixed report ID for Shackmaster
+#define CMD_LEN 63
+unsigned char cmd_buf[CMD_LEN] = { 0 };
+unsigned char cmd_power_onoff[] = {HID_REPORT_ID, 6, 'P','S','W','x', 0x0d, 0x0a};
+unsigned char cmd_power_status[] = {HID_REPORT_ID, 6, 'P','O','W','E','R', 0x0a};
+unsigned char cmd_get_analogs[] = {HID_REPORT_ID, 1, 0x0c};
+
 extern QueueHandle_t app_event_queue;
 
-/**
- * @brief HID Protocol string names
- */
-static const char *hid_proto_name_str[] = {
-    "NONE",
-    "KEYBOARD",
-    "MOUSE"
-};
-
-/**
- * @brief Makes new line depending on report output protocol type
- *
- * @param[in] proto Current protocol to output
- */
-static void hid_print_new_device_report_header(hid_protocol_t proto)
+esp_err_t send_hid_output(hid_host_device_handle_t hid_device_handle, uint8_t report_id, uint8_t *data, size_t data_len)
 {
-    static hid_protocol_t prev_proto_output = -1;
-
-    if (prev_proto_output != proto) {
-        prev_proto_output = proto;
-        printf("\r\n");
-        if (proto == HID_PROTOCOL_MOUSE) {
-            printf("Mouse\r\n");
-        } else if (proto == HID_PROTOCOL_KEYBOARD) {
-            printf("Keyboard\r\n");
-        } else {
-            printf("Generic\r\n");
-        }
-        fflush(stdout);
+    if (hid_device_handle == NULL) {
+        ESP_LOGE(TAG, "Device handle is invalid.");
+        return ESP_ERR_INVALID_ARG;
     }
+
+    // Set a report via the Control Endpoint (or interrupt out pipe if configured)
+    esp_err_t err = hid_class_request_set_report( hid_device_handle, HID_REPORT_TYPE_OUTPUT, report_id,  data, data_len );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Transfer failed: %s", esp_err_to_name(err));
+    } else {
+        //ESP_LOGI(TAG, "Sent %d bytes to device successfully.", data_len); 
+    }
+    return err;
+}
+
+// Power on/off
+bool sm_set_power(bool newState)
+{
+    // clear command buffer
+    memset(cmd_buf, 0, sizeof(cmd_buf));
+    memcpy(cmd_buf, cmd_power_onoff, sizeof(cmd_power_onoff));
+    if(newState) {
+        cmd_buf[5] = '1';       // Switch ON
+    } else {
+        cmd_buf[5] = '0';       // Switch OFF
+    }
+
+    if ( send_hid_output(usb_host_device_handle, HID_REPORT_ID, cmd_buf, sizeof(cmd_buf)) == ESP_OK) return true;
+    return false;
+}
+
+bool sm_get_values() {
+    memset(cmd_buf, 0, sizeof(cmd_buf));    // clear command buffer
+    memcpy(cmd_buf, cmd_get_analogs, sizeof(cmd_get_analogs));
+    if ( send_hid_output(usb_host_device_handle, HID_REPORT_ID, cmd_buf, sizeof(cmd_buf)) == ESP_OK) return true;
+    return false;
+}
+
+// Get power status
+esp_err_t sm_get_power(void)
+{
+    // clear command buffer
+    memset(cmd_buf, 0, sizeof(cmd_buf));
+    memcpy(cmd_buf, cmd_power_status, sizeof(cmd_power_onoff));
+    return send_hid_output(usb_host_device_handle, HID_REPORT_ID, cmd_buf, sizeof(cmd_buf));
 }
 
 /**
@@ -56,11 +89,26 @@ static void hid_print_new_device_report_header(hid_protocol_t proto)
  */
 static void hid_host_generic_report_callback(const uint8_t *const data, const int length)
 {
-    hid_print_new_device_report_header(HID_PROTOCOL_NONE);
-    for (int i = 0; i < length; i++) {
-        printf("%02X", data[i]);
+    char response[64] = { 0 };
+    if (data[0] != HID_REPORT_ID) {
+        ESP_LOGE(TAG, "Unexpected report ID from %s: %d", usb_dev_product, data[0]);
+        return;
     }
-    putchar('\r');
+    int len = data[1];      // data length
+    // get response string
+    
+    for (int i = 0; i < len+2; i++) {
+        printf("%02X ", data[i]);
+    }
+    printf("\r\n");
+    // Analog value response?
+    if (data[1] > 20 && (data[2] == 0x0c)) {
+        printf("Ananlog values received"); 
+    } else {    // everything else is ASCII
+        memcpy(response, &data[2], data[1]);
+        printf(response);
+        printf("\r\n");
+    }
 }
 
 /**
@@ -79,42 +127,113 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle, con
 
     switch (event) {
     case HID_HOST_INTERFACE_EVENT_INPUT_REPORT:
-        ESP_ERROR_CHECK(hid_host_device_get_raw_input_report_data(hid_device_handle,
-                                                                  data,
-                                                                  64,
-                                                                  &data_length));
-
-        if (HID_SUBCLASS_BOOT_INTERFACE == dev_params.sub_class) {
-            if (HID_PROTOCOL_KEYBOARD == dev_params.proto) {
-                //hid_host_keyboard_report_callback(data, data_length);
-            } else if (HID_PROTOCOL_MOUSE == dev_params.proto) {
-                //hid_host_mouse_report_callback(data, data_length);
-            }
-        } else {
-            hid_host_generic_report_callback(data, data_length);
-        }
-
+        ESP_LOGI(TAG, "hid_host_interface_callback() - HID_HOST_INTERFACE_EVENT_INPUT_REPORT");
+        memset(data,0, sizeof(data));
+        ESP_ERROR_CHECK(hid_host_device_get_raw_input_report_data(hid_device_handle, data, 64, &data_length));
+        hid_host_generic_report_callback(data, data_length);
         break;
     case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
-        ESP_LOGI(TAG, "HID Device, protocol '%s' DISCONNECTED",
-                 hid_proto_name_str[dev_params.proto]);
-        ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
+        ESP_LOGI(TAG, "HID DISCONNECT: %s S/N: %s", usb_dev_product, usb_dev_serial );
+        // Notify main application
+        const app_event_queue_t evt_queue = {
+            .event_group = APP_EVENT_HID_INTERFACE,
+            // HID Host Device related info
+            .hid_host_device.handle = hid_device_handle,
+            .hid_host_device.event = event,
+            .hid_host_device.arg = arg
+        };
+        if (app_event_queue) {
+            xQueueSend(app_event_queue, &evt_queue, 0);
+        }
         break;
     case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
-        ESP_LOGI(TAG, "HID Device, protocol '%s' TRANSFER_ERROR",
-                 hid_proto_name_str[dev_params.proto]);
+        ESP_LOGI(TAG, "HID Device - TRANSFER_ERROR");
         break;
     default:
-        ESP_LOGW(TAG, "HID Device, protocol '%s' Unhandled event: %d (possibly suspend/resume)",
-                 hid_proto_name_str[dev_params.proto],
-                 event);
+        ESP_LOGW(TAG, "HID Device - Unhandled event: %d (possibly suspend/resume)", event);
         break;
+    }
+}
+
+/**
+ * @brief Convert string from wide format to ascii
+ *
+ * @param[in]  src  source string in wide format (wchar)
+ * @param[out] dst  destination string in ASCII format
+ */
+void parse_usb_wchar(const wchar_t *src, char *dest, size_t dest_max_len)
+{
+    size_t i = 0;
+    // Loop until we find an actual null terminator or hit our destination limit
+    while (src[i] != 0 && i < (dest_max_len - 1)) {
+        // Extract only the lower 8 bits of the wide character
+        char c = (char)(src[i] & 0xFF);
+        
+        // Safety check: if an unexpected null byte is inline, don't break early
+        // if there's text, but treat actual zeroes as a string end.
+        if (c == '\0') {
+            break;
+        }
+        dest[i] = c;
+        i++;
+    }
+    dest[i] = '\0'; // Enforce clean null termination
+}
+
+/**
+ * @brief Read USB Device information
+ *
+ * @param[in] hid_device_handle  HID Device handle
+ */
+void read_device_details(hid_host_device_handle_t hid_device_handle)
+{
+    hid_host_dev_info_t dev_info;
+    // Query runtime details directly using the public HID API
+    ESP_ERROR_CHECK(hid_host_get_device_info(hid_device_handle, &dev_info));
+    // Extract and convert each string
+    parse_usb_wchar(dev_info.iManufacturer, usb_dev_manufacturer, sizeof(usb_dev_manufacturer));
+    parse_usb_wchar(dev_info.iProduct, usb_dev_product, sizeof(usb_dev_product));
+    parse_usb_wchar(dev_info.iSerialNumber, usb_dev_serial, sizeof(usb_dev_serial));
+
+    ESP_LOGI(TAG, "DEVICE INFO ====================================");
+    ESP_LOGI(TAG, "Vendor ID (VID):   0x%04X", dev_info.VID);
+    ESP_LOGI(TAG, "Product ID (PID):  0x%04X", dev_info.PID);
+    ESP_LOGI(TAG, "Manufacturer:      %s", usb_dev_manufacturer);
+    ESP_LOGI(TAG, "Description:       %s", usb_dev_product);
+    ESP_LOGI(TAG, "Serial Number:     %s", usb_dev_serial);
+    ESP_LOGI(TAG, "DEVICE INFO ====================================");
+}
+
+/**
+ * @brief USB HID Host Interface event
+ *
+ * Gets called via the app_event_queue
+ * 
+ * @param[in] hid_device_handle  HID Device handle
+ * @param[in] event              HID Host Device event
+ * @param[in] arg                Pointer to arguments, does not used
+ */
+void hid_host_interface_event(hid_host_device_handle_t hid_device_handle, const hid_host_interface_event_t event, void *arg)
+{
+    switch (event) {
+        case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
+            usb_device_is_connected = false;
+            ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
+            usb_dev_manufacturer[0] = 0;
+            usb_dev_product[0] = 0;
+            usb_dev_serial[0] = 0;
+            ESP_LOGI(TAG, "Device %s closed", usb_dev_product);
+            break;
+        default:
+            ESP_LOGW(TAG, "hid_host_interface_event() - unhandled event %d", event);
     }
 }
 
 /**
  * @brief USB HID Host Device event
  *
+ * Gets called via the app_event_queue
+ * 
  * @param[in] hid_device_handle  HID Device handle
  * @param[in] event              HID Host Device event
  * @param[in] arg                Pointer to arguments, does not used
@@ -122,43 +241,33 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle, con
 void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid_host_driver_event_t event, void *arg)
 {
     hid_host_dev_params_t dev_params;
-//    hid_class_descritpor_type_t *dev_desc;
-    //usb_device_handle_t raw_usb_handle;
 
-/*
-    // Get the USB device handle
-    ESP_ERROR_CHECK(hid_host_device_get_device_handle(hid_device_handle, &raw_usb_handle));
-    // Get device descriptor and extract vendor and product ID
-    ESP_ERROR_CHECK(usb_host_get_device_descriptor(raw_usb_handle, &device_desc));
-    uint16_t current_vid = device_desc->idVendor;
-    uint16_t current_pid = device_desc->idProduct;
+    ESP_LOGI(TAG, "hid_host_device_event() %d", event);
 
-
-*/
     ESP_ERROR_CHECK(hid_host_device_get_params(hid_device_handle, &dev_params));    
 
     switch (event) {
     case HID_HOST_DRIVER_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "HID Device, protocol '%s' CONNECTED",
-                 hid_proto_name_str[dev_params.proto]);
+        ESP_LOGI(TAG, "HID Device CONNECTED");
 
         const hid_host_device_config_t dev_config = {
             .callback = hid_host_interface_callback,
             .callback_arg = NULL
         };
+        // Open device
+        ESP_ERROR_CHECK(hid_host_device_open(hid_device_handle, &dev_config));
 
-        if (dev_params.proto != HID_PROTOCOL_NONE) {
-            ESP_ERROR_CHECK(hid_host_device_open(hid_device_handle, &dev_config));
-            if (HID_SUBCLASS_BOOT_INTERFACE == dev_params.sub_class) {
-                ESP_ERROR_CHECK(hid_class_request_set_protocol(hid_device_handle, HID_REPORT_PROTOCOL_BOOT));
-                if (HID_PROTOCOL_KEYBOARD == dev_params.proto) {
-                    ESP_ERROR_CHECK(hid_class_request_set_idle(hid_device_handle, 0, 0));
-                }
-            }
-            ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
-        }
+        read_device_details(hid_device_handle);
+
+        // Start device polling
+        ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
+        // store handle for further interaction;
+        usb_host_device_handle = hid_device_handle;
+        usb_device_is_connected = true;
+        sm_get_power();
         break;
     default:
+        ESP_LOGE(TAG, "hid_host_device_event() - event %d not handled", event);
         break;
     }
 }
@@ -172,10 +281,9 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid
  * @param[in] event             HID Device event
  * @param[in] arg               Not used
  */
-void hid_host_device_callback(hid_host_device_handle_t hid_device_handle,
-                              const hid_host_driver_event_t event,
-                              void *arg)
+void hid_host_device_callback(hid_host_device_handle_t hid_device_handle, const hid_host_driver_event_t event, void *arg)
 {
+    ESP_LOGI(TAG, "hid_host_device_callback() - event %d", event);
     const app_event_queue_t evt_queue = {
         .event_group = APP_EVENT_HID_HOST,
         // HID Host Device related info
@@ -196,11 +304,7 @@ void usb_hid_init(void) {
     * - initialize USB Host library
     * - Handle USB Host events while APP pin in in HIGH state
     */
-    usb_task_created = xTaskCreatePinnedToCore(usb_host_task,
-                                           "usb_events",
-                                           4096,
-                                           xTaskGetCurrentTaskHandle(),
-                                           2, NULL, 0);
+    usb_task_created = xTaskCreatePinnedToCore(usb_host_task, "usb_events", 4096, xTaskGetCurrentTaskHandle(), 2, NULL, 0);
     assert(usb_task_created == pdTRUE);
 
     // Wait for notification from usb_lib_task to proceed
@@ -238,9 +342,6 @@ void usb_hid_init(void) {
 bool usb_host_enum_filter_cb(const usb_device_desc_t *device_desc, unsigned char *bConfigurationValue) {
 
     ESP_LOGI(TAG, "VID: 0x%04X, PID: 0x%04X. Opening interface...\n", device_desc->idVendor, device_desc->idProduct);
-
-    // Testing only - to be deleted
-    return true;
 
     if (device_desc->idVendor != TARGET_VENDOR_ID) {
         ESP_LOGE(TAG," vendor ID mismatch, expecting 0x%04X", TARGET_VENDOR_ID);
@@ -285,6 +386,10 @@ void usb_host_task(void *arg) {
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
             ESP_ERROR_CHECK(usb_host_device_free_all());
             break;
+        }
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
+            // Executing when the USB device has been disconnected
+            //ESP_LOGI(TAG,"usb_host_task() USB_HOST_LIB_EVENT_FLAGS_ALL_FREE");
         }
     }
 

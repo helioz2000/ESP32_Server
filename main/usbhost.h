@@ -5,10 +5,16 @@
 extern "C" {
 #endif
 
+#include "usb/hid_host.h"
+
 void usb_host_task(void *arg);
 void usb_hid_init(void);
-//void hid_host_device_callback(hid_host_device_handle_t hid_device_handle, const hid_host_driver_event_t event, void *arg);
+
 void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid_host_driver_event_t event, void *arg);
+void hid_host_interface_event(hid_host_device_handle_t hid_device_handle, const hid_host_interface_event_t event, void *arg);
+
+bool sm_set_power(bool newState);
+bool sm_get_values();
 
 /**
  * @brief APP event group
@@ -21,7 +27,8 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid
  */
 typedef enum {
     APP_EVENT = 0,
-    APP_EVENT_HID_HOST
+    APP_EVENT_HID_HOST,
+    APP_EVENT_HID_INTERFACE
 } app_event_group_t;
 
 /**
