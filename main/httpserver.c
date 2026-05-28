@@ -17,17 +17,23 @@
 #include "usbhost.h"
 
 static const char *TAG = "httpserver";
+#define HTTP_PORT 80
 
 // Example variable in your C code
 int my_counter_variable = 42;
+
+extern sm_values_t sm_values;
+extern bool sm_is_connected;
 
 // Global variable to store the number sent by the user
 static int received_user_number = 0;
 static char received_user_string[64] = {0};
 
-// reference to index.html which is embedded as a binary
+// reference to html files embedded as a binary
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
+extern const uint8_t network_html_start[] asm("_binary_network_html_start");
+extern const uint8_t network_html_end[]   asm("_binary_binary_html_end");
 
 // URL Decode Helper function
 // parse hex pairs back into standard characters (e.g. %20 -> space)
@@ -53,13 +59,14 @@ void url_decode(const char *src, char *dst) {
     *dst = '\0';
 }
 
-#define HTTP_PORT 80
+// Variable to store the validated target IPv4 binary configuration layout
+static ip4_addr_t storage_ip_address;
 
-// HTTP GET Handler function
+// HTTP request Handler functions
+
+// root - send index.html
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
-    const char *response_html = "<html><body><h1>Hello from ESP32-P4 under ESP-IDF v6!</h1></body></html>";
-    
     // Set HTTP status code and content type metadata
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_status(req, "200 OK");
@@ -74,7 +81,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     const size_t index_html_size = (index_html_end - index_html_start);
     return httpd_resp_send(req, (const char *)index_html_start, index_html_size);
     
-    ESP_LOGI(TAG, "Webpage request handled successfully");
+    //ESP_LOGI(TAG, "Webpage request handled successfully");
     return ESP_OK;
 
     // Failure
@@ -102,54 +109,41 @@ static esp_err_t on_get_handler(httpd_req_t *req) {
 static esp_err_t off_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Off button activated");
     sm_set_power(false);
-    //sm_get_values();
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_send(req, "OFF_OK", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
-static const httpd_uri_t favicon_uri = {
-    .uri       = "/favicon.ico",
-    .method    = HTTP_GET,
-    .handler   = favicon_get_handler,
-    .user_ctx  = NULL
-};
-
-static const httpd_uri_t root_uri = {
-    .uri       = "/",
-    .method    = HTTP_GET,
-    .handler   = root_get_handler,
-    .user_ctx  = NULL
-};
-
-static const httpd_uri_t on_uri = {
-    .uri       = "/api/on",
-    .method    = HTTP_GET,
-    .handler   = on_get_handler,
-    .user_ctx  = NULL
-};
-
-static const httpd_uri_t off_uri = {
-    .uri       = "/api/off",
-    .method    = HTTP_GET,
-    .handler   = off_get_handler,
-    .user_ctx  = NULL
-};
-
-/* Handler to send the variable value (GET /api/status) */
+// Handler to send the variable value (GET /api/status) */
 static esp_err_t status_get_handler(httpd_req_t *req) {
-    char response_buffer[32];
+    char response_buffer[256];
     
-    // Convert the variable into a plain text string
-    snprintf(response_buffer, sizeof(response_buffer), "%d", my_counter_variable);
-    
-    ESP_LOGI(TAG,"Status: <%s>", response_buffer);
+    char sm_serial[32] =  {0};
+    char sm_version[32] =  {0};
+    char sm_connected[10];
 
-    // Simulate updating the variable every time it's read (optional)
-    my_counter_variable++; 
+    if (sm_is_connected) {
+        snprintf(sm_version, sizeof(sm_version), "%d.%d.%d", sm_values.ver_major, sm_values.ver_minor, sm_values.ver_build);
+        snprintf(sm_serial, sizeof(sm_serial), "5003%05ld", sm_values.serial);
+        snprintf(sm_connected, sizeof(sm_connected), "true");
+    }
+    else snprintf(sm_connected, sizeof(sm_connected), "false");
+
+    // Deliver data in a JSON string
+    snprintf(response_buffer, sizeof(response_buffer), "{\n\"connected\": %s, \n\"metrics\": [ \"%d.%dV\", \"%d.%dA\", \"%dW\", \"%d°C\", \"%d%%\", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%s\", \"%s\" ]\n}", 
+        sm_connected,
+        sm_values.voltage / 10, sm_values.voltage % 10, sm_values.current / 10, sm_values.current % 10,
+        sm_values.power_tot, sm_values.temp_in, sm_values.fan_duty,
+        sm_values.usb1_v / 10, sm_values.usb1_v % 10, sm_values.usb1_a / 100, sm_values.usb1_a % 100,
+        sm_values.usb2_v / 10, sm_values.usb2_v % 10, sm_values.usb2_a / 100, sm_values.usb2_a % 100,
+        sm_values.usb3_v / 10, sm_values.usb3_v % 10, sm_values.usb3_a / 100, sm_values.usb3_a % 100,
+        sm_values.usb4_v / 10, sm_values.usb4_v % 10, sm_values.usb4_a / 100, sm_values.usb4_a % 100,
+        sm_serial, sm_version);
+    
+    //ESP_LOGI(TAG,"Status: <%s>", response_buffer);
 
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_send(req, response_buffer, HTTPD_RESP_USE_STRLEN); //strlen(response_buffer)); //HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, response_buffer, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -186,10 +180,7 @@ static esp_err_t api_set_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// Variable to store the validated target IPv4 binary configuration layout
-static ip4_addr_t storage_ip_address;
-
-/* Handler for /api/set_ip?ip=192.168.1.50 */
+// Handler for /api/set_ip?ip=192.168.1.50
 static esp_err_t api_set_ip_handler(httpd_req_t *req) {
     char query_buf[64];
     char raw_ip_param[32];
@@ -221,7 +212,7 @@ static esp_err_t api_set_ip_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-/* Handler for /api/get_ip (Sends current Ethernet interface IP to browser) */
+// Handler for /api/get_ip (Sends current Ethernet interface IP to browser)
 static esp_err_t api_get_ip_handler(httpd_req_t *req) {
     esp_netif_ip_info_t ip_info;
     char ip_str[16] = "0.0.0.0";
@@ -243,7 +234,35 @@ static esp_err_t api_get_ip_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// Define the structure
+// URI definitions
+static const httpd_uri_t root_uri = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = root_get_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t favicon_uri = {
+    .uri       = "/favicon.ico",
+    .method    = HTTP_GET,
+    .handler   = favicon_get_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t on_uri = {
+    .uri       = "/api/on",
+    .method    = HTTP_GET,
+    .handler   = on_get_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t off_uri = {
+    .uri       = "/api/off",
+    .method    = HTTP_GET,
+    .handler   = off_get_handler,
+    .user_ctx  = NULL
+};
+
 static const httpd_uri_t status_uri = {
     .uri       = "/api/status",
     .method    = HTTP_GET,
@@ -251,21 +270,21 @@ static const httpd_uri_t status_uri = {
     .user_ctx  = NULL
 };
 
-httpd_uri_t set_uri = {
+const httpd_uri_t set_uri = {
     .uri       = "/api/set",
     .method    = HTTP_GET,
     .handler   = api_set_handler,
     .user_ctx  = NULL
 };
 
-httpd_uri_t set_ip_uri = {
+const httpd_uri_t set_ip_uri = {
     .uri       = "/api/set_ip",
     .method    = HTTP_GET,
     .handler   = api_set_ip_handler,
     .user_ctx  = NULL
 };
 
-httpd_uri_t get_ip_uri = {
+const httpd_uri_t get_ip_uri = {
     .uri       = "/api/get_ip",
     .method    = HTTP_GET,
     .handler   = api_get_ip_handler,
@@ -284,15 +303,15 @@ httpd_handle_t start_webserver(void)
     // Start the httpd server daemon loop
     ESP_LOGI(TAG, "Starting web server on port: '%d'", config.server_port);
     if (httpd_start(&server, &config) == ESP_OK) {
-        // Register the active route endpoints
+        // Register the active route endpoints (Maximum of 8)
         httpd_register_uri_handler(server, &root_uri);
         httpd_register_uri_handler(server, &on_uri);
         httpd_register_uri_handler(server, &off_uri);
         httpd_register_uri_handler(server, &favicon_uri);
         httpd_register_uri_handler(server, &status_uri);
-        httpd_register_uri_handler(server, &set_uri);
-        httpd_register_uri_handler(server, &set_ip_uri);
-        httpd_register_uri_handler(server, &get_ip_uri);
+        //httpd_register_uri_handler(server, &set_uri);
+        //httpd_register_uri_handler(server, &set_ip_uri);
+        // httpd_register_uri_handler(server, &get_ip_uri);   
         return server;
     }
 
@@ -301,7 +320,7 @@ httpd_handle_t start_webserver(void)
 }
 
 // Event handler loop tracking network statuses
-static void network_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+void network_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
     if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
@@ -322,31 +341,3 @@ void httpd_init(void)
     }
     ESP_ERROR_CHECK(ret);
 }
-
-/*
-void app_main(void)
-{
-    // Initialize Non-Volatile Flash memory storage allocation
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    // Initialize the baseline TCP/IP Stack systems
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    // Register handlers to track successful DHCP IP addresses assignments
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &network_event_handler, NULL));
-
-    // * NOTE FOR ETH INTERFACE INSTANTIATION:
-    // * To run this code on real hardware, you must add your board's physical Ethernet 
-    // * initialisation routine here (e.g., using `esp_eth_driver_install`). 
-    // * Once your PHY registers a physical link layer carrier signal, the DHCP engine 
-    // * will trigger IP_EVENT_ETH_GOT_IP automatically.
-     
-   ESP_LOGI(TAG, "Network sub-system initialized. Awaiting physical carrier link interface connection...");
-}
-*/

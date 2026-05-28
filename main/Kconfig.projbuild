@@ -18,6 +18,12 @@ menu "Ethernet Configuration"
         help
             Local port the server will listen on.
 
+    config ETH_DEINIT_CODE
+        bool "Include ETH deinit code"
+        default n
+        help
+            This option is to include the code for  deinitialization of the Ethernet driver.
+
     config KEEPALIVE_IDLE
         int "TCP keep-alive idle time(s)"
         default 5
@@ -217,12 +223,6 @@ menu "Ethernet Configuration"
             This allows the PHY chip to stabilize before communication begins.
             When no delay required, set -1.
 
-    config EXAMPLE_ETH_DEINIT_AFTER_S
-        int "Deinitialize Ethernet after (seconds)"
-        range -1 3600
-        default -1
-        help
-            This option is for demonstration purposes only to demonstrate deinitialization of the Ethernet driver.
-            Set to -1 to not deinitialize.
+
 
 endmenu

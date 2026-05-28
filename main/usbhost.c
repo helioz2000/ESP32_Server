@@ -1,4 +1,6 @@
 #include "stdio.h"
+#include "time.h"
+#include "stdint.h"
 #include "esp_log.h"
 #include "usb/usb_host.h"
 #include "usb/hid_host.h"
@@ -12,28 +14,50 @@
 
 static const char *TAG = "usbhost";
 
-bool usb_device_is_connected = false;
-hid_host_device_handle_t usb_host_device_handle;
+bool sm_is_connected = false;
+bool sm_awaiting_response = false;
+hid_host_device_handle_t sm_device_handle;
 
 // USB device details
 char usb_dev_manufacturer[HID_STR_DESC_MAX_LENGTH] = {0};
 char usb_dev_product[HID_STR_DESC_MAX_LENGTH] = {0};
 char usb_dev_serial[HID_STR_DESC_MAX_LENGTH] = {0};
 
-#define HID_REPORT_ID 7      // Fixed report ID for Shackmaster
+#define SM_HID_REPORT_ID 7      // HID report ID for Shackmaster
 #define CMD_LEN 63
 unsigned char cmd_buf[CMD_LEN] = { 0 };
-unsigned char cmd_power_onoff[] = {HID_REPORT_ID, 6, 'P','S','W','x', 0x0d, 0x0a};
-unsigned char cmd_power_status[] = {HID_REPORT_ID, 6, 'P','O','W','E','R', 0x0a};
-unsigned char cmd_get_analogs[] = {HID_REPORT_ID, 1, 0x0c};
+unsigned char cmd_power_onoff[] = {SM_HID_REPORT_ID, 6, 'P','S','W','x', 0x0d, 0x0a};
+unsigned char cmd_power_status[] = {SM_HID_REPORT_ID, 6, 'P','O','W','E','R', 0x0a};
+unsigned char cmd_get_analogs[] = {SM_HID_REPORT_ID, 1, 0x0c};
 
 extern QueueHandle_t app_event_queue;
 
+// Analog value storage
+sm_values_t sm_values;
+
+/**
+ * @brief Send data to 
+ *
+ * @param[in] hid_device_handle  HID Device handle
+ * @param[in] report_id          USB HID report identifier 
+ * @param[in] data               Pointer to data buffer for byte sequence
+ * @param[in] data_len           Length of data in buffer
+ */
 esp_err_t send_hid_output(hid_host_device_handle_t hid_device_handle, uint8_t report_id, uint8_t *data, size_t data_len)
 {
+    if (!sm_is_connected) {
+        ESP_LOGW(TAG,"Shackmaster is not connected - HID output failed");
+        return ESP_FAIL;
+    }
+
     if (hid_device_handle == NULL) {
         ESP_LOGE(TAG, "Device handle is invalid.");
         return ESP_ERR_INVALID_ARG;
+    }
+
+    if (sm_awaiting_response) {
+        ESP_LOGW(TAG,"Still waiting for reponse to last Shackmaster command - HID output failed");
+        return ESP_FAIL;
     }
 
     // Set a report via the Control Endpoint (or interrupt out pipe if configured)
@@ -47,7 +71,9 @@ esp_err_t send_hid_output(hid_host_device_handle_t hid_device_handle, uint8_t re
     return err;
 }
 
-// Power on/off
+/**
+ * @brief Switch power on/off
+ */
 bool sm_set_power(bool newState)
 {
     // clear command buffer
@@ -59,55 +85,133 @@ bool sm_set_power(bool newState)
         cmd_buf[5] = '0';       // Switch OFF
     }
 
-    if ( send_hid_output(usb_host_device_handle, HID_REPORT_ID, cmd_buf, sizeof(cmd_buf)) == ESP_OK) return true;
+    if ( send_hid_output(sm_device_handle, SM_HID_REPORT_ID, cmd_buf, sizeof(cmd_buf)) == ESP_OK) {
+        sm_awaiting_response = true;
+        return true;
+    }
     return false;
 }
 
+/**
+ * @brief Get analog values
+ */
 bool sm_get_values() {
     memset(cmd_buf, 0, sizeof(cmd_buf));    // clear command buffer
     memcpy(cmd_buf, cmd_get_analogs, sizeof(cmd_get_analogs));
-    if ( send_hid_output(usb_host_device_handle, HID_REPORT_ID, cmd_buf, sizeof(cmd_buf)) == ESP_OK) return true;
+    if ( send_hid_output(sm_device_handle, SM_HID_REPORT_ID, cmd_buf, sizeof(cmd_buf)) == ESP_OK) {
+        sm_awaiting_response = true;
+        return true;
+    }
     return false;
 }
 
-// Get power status
-esp_err_t sm_get_power(void)
+/**
+ * @brief Get power status
+ */
+bool sm_get_power(void)
 {
     // clear command buffer
     memset(cmd_buf, 0, sizeof(cmd_buf));
     memcpy(cmd_buf, cmd_power_status, sizeof(cmd_power_onoff));
-    return send_hid_output(usb_host_device_handle, HID_REPORT_ID, cmd_buf, sizeof(cmd_buf));
+    if ( send_hid_output(sm_device_handle, SM_HID_REPORT_ID, cmd_buf, sizeof(cmd_buf)) == ESP_OK) {
+        sm_awaiting_response = true;
+        return true;
+    }
+    return false;
 }
 
 /**
- * @brief USB HID Host Generic Interface report callback handler
+ * @brief Print all data in the sm_values_t structure 
  *
- * 'generic' means anything else than mouse or keyboard
+ * the date/time is printed in UTC format
+ *
+ * @param[in] data    Pointer to data buffer for recevied byte sequence
+ * @param[in] length  Length of data in buffer
+ */
+void print_sm_values() {
+    printf ("%d.%dV %d.%dA\n", sm_values.voltage / 10, sm_values.voltage % 10, sm_values.current / 10, sm_values.current % 10); 
+    printf ("USB1 %d.%dV %d.%dA\n", sm_values.usb1_v / 10, sm_values.usb1_v % 10, sm_values.usb1_a/100, sm_values.usb1_a % 100);
+    printf ("USB2 %d.%dV %d.%dA\n", sm_values.usb2_v / 10, sm_values.usb2_v % 10, sm_values.usb2_a/100, sm_values.usb2_a % 100);
+    printf ("USB3 %d.%dV %d.%dA\n", sm_values.usb3_v / 10, sm_values.usb3_v % 10, sm_values.usb3_a/100, sm_values.usb3_a % 100);
+    printf ("USB4 %d.%dV %d.%dA\n", sm_values.usb4_v / 10, sm_values.usb4_v % 10, sm_values.usb4_a/100, sm_values.usb4_a % 100);
+    printf("Current: %d.%dA (Max:%dA)\n", sm_values.current_tot / 10, sm_values.current_tot % 10 , sm_values.current_max);
+    printf("Temp In: %d Out: %d Fan: %d%% \n", sm_values.temp_in, sm_values.temp_out, sm_values.fan_duty);
+    printf("Mains %dV %d.%dA %d.%dHz\n", sm_values.supply_V, sm_values.current_tot / 10, sm_values.current_tot % 10, sm_values.supply_F / 10, sm_values.supply_F % 10);
+    printf("Power: %dW (Max:%dW)\n", sm_values.power_tot, sm_values.power_max);
+    printf("Serial: 5003%05ld Version %d.%d.%d\n", sm_values.serial, sm_values.ver_major, sm_values.ver_minor, sm_values.ver_build);
+    printf("Position: %d Error 1: %04x Error 2: %04x\n", sm_values.acc_pos, sm_values.err1, sm_values.err2);
+    time_t raw_time = (time_t)sm_values.time;
+    struct tm time_info;
+    char time_string[64];
+    localtime_r(&raw_time, &time_info);
+    strftime(time_string, sizeof(time_string), "%Y-%m-%d %H:%M:%S", &time_info);
+    printf("Current Date/Time: %s\n", time_string);
+}
+
+/**
+ * @brief Decode "Get Analog Values" data received from Shackmaster 
+ *
+ * the byte sequence is mapped into an sm_values_t structure
+ * data items > 8 bytes are byte swapped 
+ *
+ * @param[in] data    Pointer to data buffer for recevied byte sequence
+ * @param[in] length  Length of data in buffer
+ */
+void sm_values_decode(const uint8_t *const data, const int length){
+    // print raw data buffer
+    //for (int i = 0; i < length; i++) { printf("%02X ", data[i]); }
+    //printf("\r\nNum Bytes: %d\n", data[1]);
+    // Note: the PDU length in data[1] is incorrect in sm firmware V1.1.2, is should be 47 bytes
+    memcpy(&sm_values, &data[3], sizeof(sm_values));
+    // Byteswap all 16 bit values
+    sm_values.current = (int16_t)__builtin_bswap16((uint16_t)sm_values.current);
+    sm_values.usb1_a = (int16_t)__builtin_bswap16((uint16_t)sm_values.usb1_a);
+    sm_values.supply_V = (int16_t)__builtin_bswap16((uint16_t)sm_values.supply_V);
+    sm_values.supply_F = (int16_t)__builtin_bswap16((uint16_t)sm_values.supply_F);
+    sm_values.power_tot = (int16_t)__builtin_bswap16((uint16_t)sm_values.power_tot);
+    sm_values.current_tot = (int16_t)__builtin_bswap16((uint16_t)sm_values.current_tot);
+    sm_values.power_max = (int16_t)__builtin_bswap16((uint16_t)sm_values.power_max);
+    sm_values.current_max = (int16_t)__builtin_bswap16((uint16_t)sm_values.current_max);
+    sm_values.usb2_a = (int16_t)__builtin_bswap16((uint16_t)sm_values.usb2_a);
+    sm_values.usb3_a = (int16_t)__builtin_bswap16((uint16_t)sm_values.usb3_a);
+    sm_values.usb4_a = (int16_t)__builtin_bswap16((uint16_t)sm_values.usb4_a);
+    sm_values.err1 = (uint16_t)__builtin_bswap16((uint16_t)sm_values.err1);
+    sm_values.err2 = (uint16_t)__builtin_bswap16((uint16_t)sm_values.err2);
+    sm_values.serial = (uint32_t)__builtin_bswap32((uint32_t)sm_values.serial);
+    sm_values.time = (uint32_t)__builtin_bswap32((uint32_t)sm_values.time);
+    //print_sm_values();
+}
+
+void sm_values_zero() {
+    memset(&sm_values, 0, sizeof(sm_values));
+}
+
+/**
+ * @brief USB HID Host Interface report callback handler
  *
  * @param[in] data    Pointer to input report data buffer
  * @param[in] length  Length of input report data buffer
  */
-static void hid_host_generic_report_callback(const uint8_t *const data, const int length)
+static void hid_host_report_callback(const uint8_t *const data, const int length)
 {
     char response[64] = { 0 };
-    if (data[0] != HID_REPORT_ID) {
-        ESP_LOGE(TAG, "Unexpected report ID from %s: %d", usb_dev_product, data[0]);
+    if (data[0] != SM_HID_REPORT_ID) {
+        ESP_LOGE(TAG, "Unexpected report ID %d received from %s: %d", data[0], usb_dev_product );
         return;
     }
-    int len = data[1];      // data length
-    // get response string
-    
-    for (int i = 0; i < len+2; i++) {
-        printf("%02X ", data[i]);
-    }
-    printf("\r\n");
+
+    sm_awaiting_response = false;
+
     // Analog value response?
     if (data[1] > 20 && (data[2] == 0x0c)) {
-        printf("Ananlog values received"); 
+        //printf("Ananlog values received"); 
+        sm_values_decode(data, length);
     } else {    // everything else is ASCII
+        //int len = data[1];      // data length
+        //for (int i = 0; i < len+2; i++) { printf("%02X ", data[i]); }
+        //printf("\r\n");
         memcpy(response, &data[2], data[1]);
-        printf(response);
-        printf("\r\n");
+        //printf("SM response: %s", response);        // CR LF is contains in SM response
     }
 }
 
@@ -127,12 +231,13 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle, con
 
     switch (event) {
     case HID_HOST_INTERFACE_EVENT_INPUT_REPORT:
-        ESP_LOGI(TAG, "hid_host_interface_callback() - HID_HOST_INTERFACE_EVENT_INPUT_REPORT");
+        //ESP_LOGI(TAG, "hid_host_interface_callback() - HID_HOST_INTERFACE_EVENT_INPUT_REPORT");
         memset(data,0, sizeof(data));
         ESP_ERROR_CHECK(hid_host_device_get_raw_input_report_data(hid_device_handle, data, 64, &data_length));
-        hid_host_generic_report_callback(data, data_length);
+        hid_host_report_callback(data, data_length);
         break;
     case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
+        sm_is_connected = false;
         ESP_LOGI(TAG, "HID DISCONNECT: %s S/N: %s", usb_dev_product, usb_dev_serial );
         // Notify main application
         const app_event_queue_t evt_queue = {
@@ -148,6 +253,7 @@ void hid_host_interface_callback(hid_host_device_handle_t hid_device_handle, con
         break;
     case HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR:
         ESP_LOGI(TAG, "HID Device - TRANSFER_ERROR");
+        sm_awaiting_response = false;
         break;
     default:
         ESP_LOGW(TAG, "HID Device - Unhandled event: %d (possibly suspend/resume)", event);
@@ -217,7 +323,9 @@ void hid_host_interface_event(hid_host_device_handle_t hid_device_handle, const 
 {
     switch (event) {
         case HID_HOST_INTERFACE_EVENT_DISCONNECTED:
-            usb_device_is_connected = false;
+            sm_is_connected = false;
+            sm_awaiting_response = false;
+            sm_values_zero();
             ESP_ERROR_CHECK(hid_host_device_close(hid_device_handle));
             usb_dev_manufacturer[0] = 0;
             usb_dev_product[0] = 0;
@@ -242,7 +350,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid
 {
     hid_host_dev_params_t dev_params;
 
-    ESP_LOGI(TAG, "hid_host_device_event() %d", event);
+    //ESP_LOGI(TAG, "hid_host_device_event() %d", event);
 
     ESP_ERROR_CHECK(hid_host_device_get_params(hid_device_handle, &dev_params));    
 
@@ -262,8 +370,8 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid
         // Start device polling
         ESP_ERROR_CHECK(hid_host_device_start(hid_device_handle));
         // store handle for further interaction;
-        usb_host_device_handle = hid_device_handle;
-        usb_device_is_connected = true;
+        sm_device_handle = hid_device_handle;
+        sm_is_connected = true;
         sm_get_power();
         break;
     default:
@@ -283,7 +391,7 @@ void hid_host_device_event(hid_host_device_handle_t hid_device_handle, const hid
  */
 void hid_host_device_callback(hid_host_device_handle_t hid_device_handle, const hid_host_driver_event_t event, void *arg)
 {
-    ESP_LOGI(TAG, "hid_host_device_callback() - event %d", event);
+    //ESP_LOGI(TAG, "hid_host_device_callback() - event %d", event);
     const app_event_queue_t evt_queue = {
         .event_group = APP_EVENT_HID_HOST,
         // HID Host Device related info
@@ -297,8 +405,37 @@ void hid_host_device_callback(hid_host_device_handle_t hid_device_handle, const 
     }
 }
 
+/**
+ * @brief Timer task
+ * 
+ * to request ananlog values from SM
+ *
+ */
+void hid_timer_task(void *pvParameters)
+{
+    // Define our execution period (2000ms converted to FreeRTOS system ticks)
+    const TickType_t xPeriod = pdMS_TO_TICKS(2000);
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+
+    ESP_LOGI(TAG, "Repeating 2-second TX task started.");
+
+    while (1) {
+        // 1. Wait here until exactly 2 seconds have elapsed since the last wake time
+        vTaskDelayUntil(&xLastWakeTime, xPeriod);
+
+        // 2. Check if a device is connected before acting
+        if (sm_is_connected && sm_device_handle != NULL && !sm_awaiting_response ) {
+            if (!sm_get_values()) {
+                ESP_LOGE(TAG, "SM Get Analog Values request send failed");
+            }
+        } else {
+            ESP_LOGD(TAG, "Device not connected or busy. Skipping periodic transmission.");
+        }
+    }
+}
+
 void usb_hid_init(void) {
-    BaseType_t usb_task_created;
+    BaseType_t usb_task_created, timer_task_created;
     /*
     * Create usb_lib_task to:
     * - initialize USB Host library
@@ -309,6 +446,10 @@ void usb_hid_init(void) {
 
     // Wait for notification from usb_lib_task to proceed
     ulTaskNotifyTake(false, 1000);
+
+    // Create the timer task
+    timer_task_created = xTaskCreatePinnedToCore(hid_timer_task,"hid_timer_task", 4096, NULL, 2, NULL, 0);
+    assert(timer_task_created == pdTRUE);
 
     /*
     * HID host driver configuration
@@ -328,6 +469,13 @@ void usb_hid_init(void) {
 
     // Create queue
     app_event_queue = xQueueCreate(10, sizeof(app_event_queue_t));
+
+    ESP_LOGI(TAG, "Waiting for HID Device to be connected");
+}
+
+void usb_hid_deinit(void) {
+    ESP_LOGI(TAG, "HID Driver uninstall");
+    ESP_ERROR_CHECK(hid_host_uninstall());
 }
 
 #if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
