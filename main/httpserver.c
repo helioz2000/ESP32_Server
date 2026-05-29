@@ -116,10 +116,12 @@ static esp_err_t off_get_handler(httpd_req_t *req) {
 
 // Handler to send the variable value (GET /api/status) */
 static esp_err_t status_get_handler(httpd_req_t *req) {
-    char response_buffer[256];
+    char buf1[128];
+    char buf2[256];
+    char response_buffer[512];
     
-    char sm_serial[32] =  {0};
-    char sm_version[32] =  {0};
+    char sm_serial[12] =  {0};
+    char sm_version[15] =  {0};
     char sm_connected[10];
 
     if (sm_is_connected) {
@@ -130,15 +132,18 @@ static esp_err_t status_get_handler(httpd_req_t *req) {
     else snprintf(sm_connected, sizeof(sm_connected), "false");
 
     // Deliver data in a JSON string
-    snprintf(response_buffer, sizeof(response_buffer), "{\n\"connected\": %s, \n\"metrics\": [ \"%d.%dV\", \"%d.%dA\", \"%dW\", \"%d°C\", \"%d%%\", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%s\", \"%s\" ]\n}", 
-        sm_connected,
+    snprintf(buf1,sizeof(buf1), "\"%d.%dV\", \"%d.%dA\", \"%dW\", \"%d°C\", \"%d%%\", \"%dV %d.%dHz\"",
         sm_values.voltage / 10, sm_values.voltage % 10, sm_values.current / 10, sm_values.current % 10,
-        sm_values.power_tot, sm_values.temp_in, sm_values.fan_duty,
+        sm_values.power_tot, sm_values.temp_in, sm_values.fan_duty, sm_values.supply_V, sm_values.supply_F / 10, sm_values.supply_F % 10);
+
+    snprintf(buf2, sizeof(buf2), ", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%d.%dV\", \"%d.%dA\", \"%s\", \"%s\"",
         sm_values.usb1_v / 10, sm_values.usb1_v % 10, sm_values.usb1_a / 100, sm_values.usb1_a % 100,
         sm_values.usb2_v / 10, sm_values.usb2_v % 10, sm_values.usb2_a / 100, sm_values.usb2_a % 100,
         sm_values.usb3_v / 10, sm_values.usb3_v % 10, sm_values.usb3_a / 100, sm_values.usb3_a % 100,
         sm_values.usb4_v / 10, sm_values.usb4_v % 10, sm_values.usb4_a / 100, sm_values.usb4_a % 100,
         sm_serial, sm_version);
+
+    snprintf(response_buffer, sizeof(response_buffer), "{\n\"connected\": %s, \n\"metrics\": [ %s%s ]\n}", sm_connected, buf1, buf2);
     
     //ESP_LOGI(TAG,"Status: <%s>", response_buffer);
 
